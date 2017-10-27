@@ -1,0 +1,883 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>IFC 3D Viewer</title>
+
+    <script src="js/three.min.js"></script>
+    <script src="js/libs/stats.min.js"></script>
+    <script src="js/libs/dat.gui.min.js"></script>
+    <script src="js/controls/OrbitControls.js"></script>
+    <script src="js/renderers/Projector.js"></script>
+    <script src="js/renderers/CanvasRenderer.js"></script>
+
+
+    <script src="ifcLib/binaryAjax_bin.js"></script>
+    <script src="ifcLib/binaryDownload_bin.js"></script>
+    <script src="ifcLib/binaryWrapper_bin.js"></script>
+    <script src="ifcLib/lfmFile_bin.js"></script>
+
+    <link rel="stylesheet" href="JSTree/themes/default/style.min.css" />
+    <script src="//ajax.googleapis.com/ajax/libs/jquery/1/jquery.min.js"></script>
+    <script src="JSTree/jstree.min.js"></script>
+
+
+    <style type ="text/css">
+        *{   margin: 0;padding: 0;
+            -moz-box-sizing: border-box;
+            box-sizing: border-box;
+        }
+        html, body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            font-size: 12px;
+        }
+        .wrapperDiv{
+            /* overflow:hidden; */
+            /* border:1px solid red; */
+            height: 100%;
+        }
+        #sidebar{
+            width: 200px;
+            float:left;
+        }
+        .mapview{
+            float: left;
+            background-color: #fcf8e3;
+            border:1px solid grey;
+        }
+
+        h1 { font-size:1.5em; }
+        .FloorTree { overflow:auto; font-size: 10px; min-height:100px; }
+
+    </style>
+</head>
+<body>
+<div class="wrapperDiv">
+    <div id="sidebar" style="position:absolute;">
+        <br>
+        <p>&nbsp;&nbsp;IFC Viewer 3D</p>
+        <div id="floorObjs" class="FloorTree" style="position:absolute; top: 50px; margin-left: 10px; width: 180px;"></div>
+    </div>
+
+    <div id="renderView" class="mapview" style="position:absolute;">
+    </div>
+
+</div>
+
+<script>
+
+    $.jstree.defaults.core.themes.variant = "small";
+
+    var g_lfmURLs = [  "./NHS office/office_1 floor.lfm",   //
+        "./NHS office/office_2 floor.lfm",
+        "./NHS office/office_3 floor.lfm",
+        "./NHS office/office_roof.lfm"
+    ];
+
+    var SpaceWorld = {
+        name : 'SpaceWorld',
+        AABB  : { minX: 99999999.0, minY: 99999999.0, minZ: 99999999.0 , maxX : -99999999.0, maxY: -99999999.0, maxZ: -99999999.0 }
+    };
+
+
+    SpaceWorld.scene = null;
+    SpaceWorld.camera = null;
+    SpaceWorld.light = null;
+    SpaceWorld.plane = null;
+    SpaceWorld.planeGeometry = null;
+    SpaceWorld.renderer = null;
+
+    //     SpaceWorld.sbmLoaders = [];
+    SpaceWorld.obj3Ds = [];
+    SpaceWorld.lfmFiles = [];
+    SpaceWorld.aabbs = [];
+    SpaceWorld.vertexCount = 0;
+    SpaceWorld.faceCount = 0;
+
+    SpaceWorld.trackBall = null;
+    SpaceWorld.reqStartTime = 0;
+    SpaceWorld.reqFirstEndTime = 0;
+    SpaceWorld.reqFinalEndTime = 0;
+
+    SpaceWorld.recvSbmCount = 0;
+
+    SpaceWorld.reqStartTime = new Date().getTime();
+    SpaceWorld.skyBox  = null;
+
+    var texture_placeholder;
+
+
+    var adjustWidth = 204;
+    var adjustHeight = 4;
+
+    function getRandomArbitary(min, max) {
+        return Math.random() * (max - min) + min;
+    }
+
+    function GetInfoOfAABB( AABB ){
+        var vWidth = ( AABB.maxX - AABB.minX );
+        var vHeight = ( AABB.maxY - AABB.minY );
+        var vDepth = ( AABB.maxZ - AABB.minZ );
+        var vCenterX = ( AABB.minX + AABB.maxX ) / 2.0 ;
+        var vCenterY = ( AABB.minY + AABB.maxY ) / 2.0;
+        var vCenterZ = ( AABB.minZ + AABB.maxZ ) / 2.0 ;
+
+        return {
+            width : vWidth,
+            height : vHeight,
+            depth : vDepth,
+            centerX : vCenterX,
+            centerY : vCenterY,
+            centerZ : vCenterZ
+        }
+    }
+
+    function initStats(){
+        var stats = new Stats();
+
+        stats.setMode(0); // 0: fps, 1: ms
+
+        // Align top-left
+        stats.domElement.style.position = 'absolute';
+        stats.domElement.style.left = '0px';
+        stats.domElement.style.top = '0px';
+
+        document.getElementById("renderView").appendChild(stats.domElement);
+
+        return stats;
+    }
+
+    function loadTexture( path ) {
+
+        var texture = new THREE.Texture( texture_placeholder );
+        var material = new THREE.MeshBasicMaterial( { map: texture, overdraw: 0.5 } );
+
+        var image = new Image();
+        image.onload = function () {
+
+            texture.image = this;
+            texture.needsUpdate = true;
+
+        };
+        image.src = path;
+
+        return material;
+
+    }
+
+    function initScene() {
+
+        // create a SpaceWorld.scene, that will hold all our elements such as objects, cameras and lights.
+        SpaceWorld.scene = new THREE.Scene();
+        SpaceWorld.scene.background = new THREE.Color(0xcce0ff);
+        // SpaceWorld.scene.fog = new THREE.Fog(0xcce0ff, 40000, 50000);
+
+        // create a camera, which defines where we're looking at.
+        SpaceWorld.camera = new THREE.PerspectiveCamera(65, window.window.renderWidth / window.window.renderHeight, 1, 160000);
+        // position and point the SpaceWorld.camera to the center of the scene
+        SpaceWorld.camera.position.x = -6000;
+        SpaceWorld.camera.position.y = 3000;
+        SpaceWorld.camera.position.z = 6000;
+        SpaceWorld.camera.lookAt(SpaceWorld.scene.position);
+
+        SpaceWorld.scene.add(SpaceWorld.camera);
+
+
+        texture_placeholder = document.createElement( 'canvas' );
+        texture_placeholder.width = 128;
+        texture_placeholder.height = 128;
+
+        var context = texture_placeholder.getContext( '2d' );
+        context.fillStyle = 'rgb( 200, 200, 200 )';
+        context.fillRect( 0, 0, texture_placeholder.width, texture_placeholder.height );
+
+        var materials = [
+
+
+            loadTexture( './textures/cube/skybox/hills_right.png' ), // right
+            loadTexture( './textures/cube/skybox/hills_left.png' ), // left
+            loadTexture( './textures/cube/skybox/hills_top.png' ), // top
+            loadTexture( './textures/cube/skybox/hills_bottom.png' ), // bottom
+            loadTexture( './textures/cube/skybox/hills_back.png' ), // back
+            loadTexture( './textures/cube/skybox/hills_front.png' )  // front
+
+
+            /*
+             loadTexture( './textures/cube/skybox/sky1/sky_right.jpg' ), // right
+             loadTexture( './textures/cube/skybox/sky1/sky_left.jpg' ), // left
+             loadTexture( './textures/cube/skybox/sky1/sky_top.jpg' ), // top
+             loadTexture( './textures/cube/skybox/sky1/hills_bottom.png' ), // bottom
+             loadTexture( './textures/cube/skybox/sky1/sky_back.jpg' ), // back
+             loadTexture( './textures/cube/skybox/sky1/sky_front.jpg' )  // front
+             */
+        ];
+
+        SpaceWorld.skyBox = new THREE.Mesh( new THREE.BoxGeometry( 200000, 200000, 200000, 7, 7, 7 ), materials );
+        SpaceWorld.skyBox.scale.x = - 1;
+        SpaceWorld.scene.add( SpaceWorld.skyBox );
+
+    }
+
+    function initRenderer(){
+        // create a render and set the size
+        SpaceWorld.renderer = new THREE.WebGLRenderer({antialias: true, logarithmicDepthBuffer: false, preserveDrawingBuffer: true  });
+
+        SpaceWorld.renderer.setPixelRatio(window.devicePixelRatio);
+        SpaceWorld.renderer.setSize(window.renderWidth, window.renderHeight);
+
+        // SpaceWorld.renderer.shadowMap = true;
+        // SpaceWorld.renderer.enabled = true;
+        // SpaceWorld.renderer.shadowMap.type = THREE.PCFShadowMap;
+        // SpaceWorld.renderer.shadowMap.renderSingleSided = true;
+        SpaceWorld.renderer.shadowMapEnabled = true;
+
+        document.getElementById("renderView").appendChild(SpaceWorld.renderer.domElement);
+
+        SpaceWorld.renderer.gammaInput = true;
+        SpaceWorld.renderer.gammaOutput = true;
+
+        SpaceWorld.renderer.shadowMapEnabled = true;
+
+
+        var orbintControls = new THREE.OrbitControls( SpaceWorld.camera, SpaceWorld.renderer.domElement );
+        orbintControls.damping = 0.2;
+        orbintControls.maxPolarAngle = Math.PI * 0.5;
+        orbintControls.minDistance = 30;
+        orbintControls.maxDistance = 21000;
+
+    }
+
+
+    function initPlane() {
+        var loader = new THREE.TextureLoader();
+        var groundTexture = loader.load( './textures/terrain/grasslight-big.jpg' );
+        groundTexture.wrapS = groundTexture.wrapT = THREE.RepeatWrapping;
+        groundTexture.repeat.set( 20, 20 );
+        groundTexture.anisotropy = 16;
+
+
+        // var groundMaterial = new THREE.MeshPhongMaterial( { color: 0xffffff, specular: 0x111111, map: groundTexture } );
+        var groundMaterial = new THREE.MeshLambertMaterial( { color: 0xffffff, map: groundTexture } );
+
+        SpaceWorld.planeGeometry = new THREE.PlaneBufferGeometry( 70000, 70000 );
+        SpaceWorld.plane = new THREE.Mesh( SpaceWorld.planeGeometry, groundMaterial );
+        SpaceWorld.plane.receiveShadow = true;
+
+        SpaceWorld.plane.rotation.x = -0.5 * Math.PI;
+        SpaceWorld.plane.position.x = 0;
+        // SpaceWorld.plane.position.y = 0;
+        SpaceWorld.plane.position.y = -100;
+        SpaceWorld.plane.position.z = 0;
+
+        SpaceWorld.scene.add( SpaceWorld.plane );
+
+        /*
+         var gridHelper = new THREE.GridHelper( SpaceWorld.planeGeometry.parameters.width, 60 );      // 1200 크기에 20개의 셀로 분할
+         gridHelper.position.y = SpaceWorld.plane.position.y;
+
+         SpaceWorld.scene.add( gridHelper );
+         */
+
+    }
+
+
+    function initDirLight() {
+
+        /*
+         var posX = - ( SpaceWorld.planeGeometry.parameters.width * 0.3 );
+         var posY = SpaceWorld.planeGeometry.parameters.height * 0.6;
+         var posZ = 0;
+         */
+
+        var posX = -6000;
+        var posY = 12000;
+        var posZ = 0;
+
+        // add subtle ambient lighting
+        var ambientLight = new THREE.AmbientLight(0x0c0c0c);
+        SpaceWorld.scene.add(ambientLight);
+
+
+        // var dirLight = new THREE.DirectionalLight( 0xdfebff, 1.75 );    // 파라미터 확인할 것
+        var dirLight = new THREE.DirectionalLight( 0xffffff, 1.5 );
+        // var dirLight = new THREE.DirectionalLight( 0xdfebff, 2 );    // 파라미터 확인할 것
+
+        dirLight.position.set( posX, posY, posZ );
+        // dirLight.position.multiplyScalar( 1.3 );
+        dirLight.castShadow = true;
+
+        // dirLight.shadow.mapSize.width = 2048;
+        // dirLight.shadow.mapSize.height = 2048;
+        dirLight.shadow.mapSize.width = 4096;
+        dirLight.shadow.mapSize.height = 4096;
+
+
+        //dirLight.shadow = new THREE.LightShadow( new THREE.PerspectiveCamera( 70, 1, 200, 2000 ) );
+        // dirLight.shadow = new THREE.LightShadow( new THREE.PerspectiveCamera( 70, 1, 8000, 16000 ) );
+        // dirLight.shadow.bias = -0.000222;
+
+        var dist = 8000;
+        dirLight.shadow.camera.left = - dist;
+        dirLight.shadow.camera.right = dist;
+        dirLight.shadow.camera.top = dist;
+        dirLight.shadow.camera.bottom = -dist;
+
+        dirLight.shadow.camera.near = 8000;
+        dirLight.shadow.camera.far = 16000;
+
+        SpaceWorld.scene.add( dirLight );
+
+        //    SpaceWorld.scene.add( new THREE.CameraHelper( dirLight.shadow.camera ) );
+
+        SpaceWorld.camera.position.x = posX;
+        SpaceWorld.camera.position.y = posY;
+        SpaceWorld.camera.position.z = posZ;
+
+
+        /*
+         //var sphereGeometry = new THREE.SphereGeometry( 5, 5, 5 );
+         var sphereGeometry = new THREE.SphereGeometry( 100, 100, 100 );
+         var sphereMaterial = new THREE.MeshLambertMaterial({color: 0xff0000 });
+         var sphere = new THREE.Mesh( sphereGeometry, sphereMaterial);
+         sphere.position.set( posX, posY, posZ );
+         SpaceWorld.scene.add( sphere );
+         */
+
+
+        SpaceWorld.camera.position.x = posX;
+        SpaceWorld.camera.position.y = posY;
+        SpaceWorld.camera.position.z = posZ;
+
+    }
+
+
+    function init(){
+
+//         var stats = initStats();
+
+        initScene();
+        initPlane();
+        initDirLight();
+        initRenderer();
+
+
+        // add the output of the renderer to the html element
+        // document.getElementById("renderView").appendChild(renderer.domElement);
+
+        // call the render function
+        var step = 0;
+
+        function addGeometryCube( geometry ){
+            var obj3D = new THREE.Object3D();
+            var newGeom = new THREE.Geometry();
+
+            var vertCount = geometry.vertices.length;
+            for( var vtIdx in geometry.vertices ){
+                var vert = geometry.vertices[ vtIdx ];
+
+                var newVert = new THREE.Vector3();
+                newVert.x = vert.x;
+                newVert.y = vert.y;
+                newVert.z = vert.z;
+
+                newGeom.vertices.push( newVert );
+            }
+
+            var faceCount = geometry.faces.length;
+
+            for( var fcIdx in geometry.faces ){
+                var face = geometry.faces[ fcIdx ];
+
+                var newFace = new THREE.Face3();
+                newFace.a = face.a;
+                newFace.b = face.b;
+                newFace.c = face.c;
+
+                newGeom.faces.push( newFace );
+            }
+
+            newGeom.computeBoundingSphere();
+            newGeom.computeBoundingBox();
+            // newGeom.computeVertexNormals(true);
+            newGeom.computeFaceNormals();
+
+
+            var geomMaterial = new THREE.MeshLambertMaterial({color: Math.random() * 0xffffff});
+            var newMesh = new THREE.Mesh( newGeom, geomMaterial);
+
+            newMesh.position.x = -(SpaceWorld.planeGeometry.parameters.width*0.5) + Math.round((Math.random() * SpaceWorld.planeGeometry.parameters.width));
+            newMesh.position.y = Math.round((Math.random() * 1000));
+            newMesh.position.z = -(SpaceWorld.planeGeometry.parameters.height*0.5) + Math.round((Math.random() * SpaceWorld.planeGeometry.parameters.height));
+
+            newMesh.castShadow = true;
+            newMesh.receiveShadow = true;
+            newMesh.name = "cube-" + SpaceWorld.scene.children.length;
+
+            obj3D.add( newMesh );
+
+            SpaceWorld.scene.add( obj3D );
+
+            //var bufGeom = new THREE.BufferGeometry();
+        }
+
+        renderLoop();
+
+        function renderLoop()
+        {
+            // stats.update();
+
+            // rotate the cubes around its axes
+            SpaceWorld.scene.traverse( function (e) {
+
+            });
+
+
+            var camera = SpaceWorld.camera;
+            var cameraPos = camera.position;
+
+            SpaceWorld.skyBox.position.x = cameraPos.x;
+            SpaceWorld.skyBox.position.y = cameraPos.y * 0.0000001;
+            SpaceWorld.skyBox.position.z = cameraPos.z;
+
+
+            // render using requestAnimationFrame
+            requestAnimationFrame(renderLoop);
+            SpaceWorld.renderer.render(SpaceWorld.scene, SpaceWorld.camera);
+        }
+
+    }
+
+    function ifcDownload(){
+        for( var vIdx in g_lfmURLs ) {
+            var lfmLoader = new BinaryDownload( g_lfmURLs[vIdx], onSbmLoadComplete,  function(){ alert("Failed to load " + strURL );} );
+            // SpaceWorld.sbmLoaders.push( sbmLoader );
+        }
+    }
+
+    var adjustScrDiv = (function(){
+
+        var bIsFullScr = 'false';
+
+        function fullScrMap(){
+            var sidebar = document.getElementById('sidebar');
+            var mapview = document.getElementById('renderView');
+
+            var toggleBtn = document.getElementById("footerToggle");
+            toggleBtn.style.left = ( window.innerWidth * 0.5 ) + "px";
+            toggleBtn.style.top = (window.innerHeight - 13)+ "px";
+
+
+            sidebar.style.bottom = 0 + 'px';
+
+            mapview.style.left = 200+'px';
+            mapview.style.right = 0 + 'px';
+            mapview.style.bottom = 0 + 'px';
+        }
+
+        function normalScrMap(){
+            var sidebar = document.getElementById('sidebar');
+            var mapview = document.getElementById('renderView');
+            var footer = document.getElementById('footer');
+
+            var mapHeight = window.innerHeight * 0.65;
+
+            sidebar.style.top = 0;
+            sidebar.style.bottom = ( window.innerHeight- ( window.innerHeight * 0.65 )) + 'px';
+            mapview.style.left = 200+'px';
+            mapview.style.right = 0 + 'px';
+            mapview.style.top = 0 + 'px';
+            mapview.style.bottom = 0 + 'px';
+        }
+
+        function showScrMap( ){
+
+            var img1 = "hideBible.png";
+            var img2 = "showBible.png";
+
+            var toggleBtn = document.getElementById("footerToggle");
+
+            if( bIsFullScr == 'false' ) {
+                adjustScrDiv.normalScrMap();
+                //    toggleBtn.src = img1;
+            }
+            else{
+                adjustScrDiv.fullScrMap();
+                //   toggleBtn.src = img2;
+            }
+
+            // map.updateSize();
+        }
+
+        function toggleScrMap(){
+
+            if( bIsFullScr == 'false'){
+                bIsFullScr = 'true';
+            }
+            else{
+                bIsFullScr = 'false';
+            }
+            showScrMap();
+        }
+
+        return {
+            fullScrMap : fullScrMap,
+            normalScrMap : normalScrMap,
+            showScrMap : showScrMap,
+            toggleScrMap : toggleScrMap
+        };
+
+    }());
+
+
+    window.onload = function(){
+
+        window.renderWidth = window.innerWidth - adjustWidth;
+        window.renderHeight = window.innerHeight - adjustHeight;
+
+        init();
+        adjustScrDiv.normalScrMap();
+
+        ifcDownload();
+
+        $('#floorObjs')
+                .on("changed.jstree", function (e, data) {
+                    if( data.node ){
+                        if( data.node.text == "NHS Office" ){
+                            for( var idx in SpaceWorld.obj3Ds ){
+                                var obj3d = SpaceWorld.obj3Ds[idx];
+                                obj3d.visible = false;
+                            }
+
+                            if(data.selected.length) {
+                                for( var selIdx in data.selected ) {
+                                    showOrHideFloor( data.instance.get_node(data.selected[selIdx]).text, true );
+                                }
+                            }
+                        }else {
+                            if (data.action == 'select_node') {
+                                showOrHideFloor(data.node.text, true);
+                            }
+                            if (data.action == 'deselect_node') {
+                                showOrHideFloor(data.node.text, false);
+                            }
+                        }
+                    }
+                })
+                .jstree({
+                    "checkbox": {
+                        "keep_selected_style": true
+                    },
+                    "plugins": ["checkbox"],
+                    'core' : {
+                        'multiple' : true,
+                        'data' : [
+                            {
+                                "text" : "NHS Office",
+                                "icon" : "./JSTree/themes/default/floor.png",
+                                "state" : {
+                                    "opened" : true  },
+                                "children" : [
+                                    { "text" : "office_1 floor.lfm", "id" : 1, "state": { "selected": true }, "icon" : "./JSTree/themes/default/floor.png" },
+                                    { "text" : "office_2 floor.lfm", "id" : 2, "state": { "selected": true }, "icon" : "./JSTree/themes/default/floor.png"  },
+                                    { "text" : "office_3 floor.lfm", "id" : 3, "state": { "selected": true }, "icon" : "./JSTree/themes/default/floor.png"  },
+                                    { "text" : "office_roof.lfm",   "id" : 4, "state": { "selected": true }, "icon" : "./JSTree/themes/default/floor.png"  }
+                                ]}
+                        ]
+                    }
+                });
+
+    };
+
+    window.onresize = function(){
+
+        window.renderWidth = window.innerWidth - adjustWidth;
+        window.renderHeight = window.innerHeight - adjustHeight;
+
+        if( SpaceWorld.camera ) {
+            // camera.aspect = window.innerWidth / window.innerHeight;
+            SpaceWorld.camera.aspect = window.renderWidth / window.renderHeight;
+            SpaceWorld.camera.updateProjectionMatrix();
+        }
+
+        if( SpaceWorld.renderer ) {
+            // SpaceWorld.renderer.setSize(window.innerWidth-adjustWidth, window.innerHeight-adjustHeight);
+            SpaceWorld.renderer.setSize( window.renderWidth, window.renderHeight );
+        }
+
+        adjustScrDiv.showScrMap();
+    };
+
+    /////////////////////////////////////////////////////////////////////
+
+    function getMaterial( materials, matID ){
+        for( var vIdx in materials.Array ){
+            var material = materials.Array[vIdx];
+            if( material.nID == matID )
+                return material;
+        }
+        return null;
+    }
+
+    var countObject3D = 0;
+
+    function construct3DMesh( sbmFile ) {
+
+        var obj3D = new THREE.Object3D;
+
+        countObject3D ++;
+        // obj3D.name = "obj3D-" + countObject3D;
+        obj3D.name = sbmFile.name;
+
+        var meshs = sbmFile.meshs;
+        var materials = sbmFile.materials;
+        var meshCount = meshs.mesh_count;
+        console.log("meshCount: " + meshCount );
+
+        for( var vIdx in meshs.Array ) {
+            var meshObj = meshs.Array[vIdx];
+
+            var vertices = meshObj.vertices;
+            var faces = meshObj.faces;
+
+            var geom = new THREE.Geometry();
+            geom.vertices = vertices;
+            geom.faces = faces;
+
+            geom.computeBoundingSphere();
+            geom.computeBoundingBox();
+            // geom.computeVertexNormals(true);
+            geom.computeFaceNormals();
+
+            var matID = meshObj.materialID;
+
+            var vColor ;
+            var alpha = 0.9;
+
+            // var material = sbmFile.materials.Array[ matID ];
+            var material = getMaterial( sbmFile.materials, matID );
+            if( material == null )
+                vColor = Math.random() * 0xffffff;
+            else {
+                vColor = new THREE.Color(material.diffuse.red, material.diffuse.green, material.diffuse.blue);
+                alpha = material.diffuse.alpha;
+
+                /*
+                 if( alpha < 1.0 )
+                 console.log(" here!!! ");
+
+                 if( alpha < 0.4 )
+                 alpha = 0.6;
+                 if( alpha == 1)
+                 alpha = 0.8;
+                 */
+            }
+
+            // var geomMaterial = new THREE.MeshLambertMaterial({ opacity: alpha, color: vColor, transparent: true });
+            var geomMaterial = new THREE.MeshPhongMaterial({
+                color: new THREE.Color(material.diffuse.red, material.diffuse.green, material.diffuse.blue),
+                // ambient: new THREE.Color(material.ambient.red, material.ambient.green, material.ambient.blue),
+                opacity: alpha,
+                transparent: true,
+                // map: texture,
+                side: THREE.FrontSide,
+                alphaTest: 0.5,
+                shininess: 50,
+                // specular: 0x101010,
+                // shading: THREE.FlatShading,
+                // specular : new THREE.Color(material.specular.red, material.specular.green, material.specular.blue),
+
+                // specular: 0x050505,
+                specular: 0x757575,
+                // emissive: 0x000000,
+                emissive: new THREE.Color(material.ambient.red, material.ambient.green, material.ambient.blue),
+
+                needsUpdate: true
+                //overdraw: 1
+            });
+
+
+
+            bufgeom = new THREE.BufferGeometry();
+            bufgeom.fromGeometry(geom);
+
+            var newMesh = new THREE.Mesh( bufgeom, geomMaterial);
+
+            newMesh.castShadow = true;
+            newMesh.receiveShadow = true;
+            newMesh.name = "mesh-" + SpaceWorld.scene.children.length;
+
+            obj3D.add( newMesh );
+
+            // sceneObj.add(mesh);
+            // SpaceWorld.scene.add(threeMesh);
+        }  // end of  for( var vIdx in meshs.Array ) {
+
+
+        SpaceWorld.scene.add( obj3D );
+
+        SpaceWorld.obj3Ds.push( obj3D );
+
+        SpaceWorld.aabbs.push( meshs.AABB );
+
+        if( SpaceWorld.lfmFiles.length == g_lfmURLs.length ) {
+
+            for( var idx in SpaceWorld.aabbs ){
+                var eachAABB = SpaceWorld.aabbs[idx];
+                if( SpaceWorld.AABB.minX > eachAABB.minX ){
+                    SpaceWorld.AABB.minX = eachAABB.minX;
+                }
+                if( SpaceWorld.AABB.minY > eachAABB.minY ){
+                    SpaceWorld.AABB.minY = eachAABB.minY;
+                }
+                if( SpaceWorld.AABB.minZ > eachAABB.minZ ){
+                    SpaceWorld.AABB.minZ = eachAABB.minZ;
+                }
+
+                if( SpaceWorld.AABB.maxX < eachAABB.maxX ){
+                    SpaceWorld.AABB.maxX = eachAABB.maxX;
+                }
+                if( SpaceWorld.AABB.maxY < eachAABB.maxY ){
+                    SpaceWorld.AABB.maxY = eachAABB.maxY;
+                }
+                if( SpaceWorld.AABB.maxZ < eachAABB.maxZ ){
+                    SpaceWorld.AABB.maxZ = eachAABB.maxZ;
+                }
+            }  // end of 'for( var idx in SpaceWorld.aabbs ){'
+
+            console.log( "[" +idx+"] minX : " + SpaceWorld.AABB.minX + ", minY :" + SpaceWorld.AABB.minY + ", minZ :" + SpaceWorld.AABB.minZ +
+                    ", maxX : " + SpaceWorld.AABB.maxX + ", maxY : "  + SpaceWorld.AABB.maxY + ", maxZ :" + SpaceWorld.AABB.maxZ );
+
+            var AABBInfo = GetInfoOfAABB(SpaceWorld.AABB);
+
+            /*
+             SpaceWorld.camera.position.x = AABBInfo.centerX;
+             SpaceWorld.camera.position.y = AABBInfo.height * 2;
+             SpaceWorld.camera.position.z = (AABBInfo.centerZ ) + AABBInfo.depth * 2;
+
+
+             SpaceWorld.camera.position.x = - ( AABBInfo.width * 0.3 );
+             SpaceWorld.camera.position.y = AABBInfo.height * 0.6;
+             SpaceWorld.camera.position.z = 0;
+
+             // SpaceWorld.camera.lookAt( AABBInfo.centerX, 0, AABBInfo.centerZ );
+             */
+        }
+    }
+
+    var onSbmLoadComplete = function( oHTTP ){
+        var binFile = oHTTP.binaryResponse;
+        var sbmFile = new SbmFile( binFile );
+        sbmFile.name = oHTTP.fileName;
+
+        SpaceWorld.lfmFiles.push( sbmFile );
+        construct3DMesh( sbmFile );
+
+        SpaceWorld.vertexCount += sbmFile.meshs.vertex_count;
+        SpaceWorld.faceCount += sbmFile.meshs.face_count;
+
+        SpaceWorld.recvSbmCount ++;
+
+        if( SpaceWorld.recvSbmCount == 1 ) {
+            var recvTime1 = new Date().getTime();
+            SpaceWorld.reqFirstEndTime = recvTime1 - SpaceWorld.reqStartTime;
+        }
+
+        if( SpaceWorld.recvSbmCount == g_lfmURLs.length ) {
+            var recvTime2 = new Date().getTime();
+            SpaceWorld.reqFinalEndTime = recvTime2 - SpaceWorld.reqStartTime;
+        }
+
+        if( SpaceWorld.recvSbmCount >= g_lfmURLs.length ){
+            initSpriteTree();
+        }
+
+    };
+
+
+    function initSpriteTree() {
+        var texFileList = [
+            "./textures/tree/tree_test02_result01_512x512.png",
+            "./textures/tree/tree_test03_result01_treed_512x512.png",
+            "./textures/tree/tree_test04_result01_sapling_512x512.png",
+            "./textures/tree/tree_test05_result01_sapling_512x512.png",
+            "./textures/tree/tree_test06_result01_arbaro_512x512.png",
+            "./textures/tree/tree_test07_result01_sapling_512x512.png",
+            "./textures/tree/tree_test08_result01_sapling_512x512.png",
+            "./textures/tree/tree_test09_result01_luxrender_512x512.png",
+            "./textures/tree/tree_test10_result01_luxrender_512x512.png",
+        ];
+        var texTrees = [];
+        for (var i = 0; i < texFileList.length; i++) {
+            texTrees.push(new THREE.TextureLoader().load(texFileList[i]));
+            texTrees[i].anisotropy = SpaceWorld.renderer.getMaxAnisotropy();
+        }
+
+        // ビルボード相当を Sprite を使って作成
+        var group = new THREE.Group();
+        var trees = [];
+        var treesScale = [];
+        // var r = 480;
+        var r = SpaceWorld.planeGeometry.parameters.width / 2;
+
+        for (var i = 0; i < 512; i++) {
+            var w = getRandomArbitary(1500, 2000);
+            treesScale.push(w);
+
+            var x = getRandomArbitary(-r, r);
+            var y = w / 2;
+            var z = getRandomArbitary(-r, r);
+
+            if( isInbound( SpaceWorld.AABB.minX, SpaceWorld.AABB.minZ, SpaceWorld.AABB.maxX, SpaceWorld.AABB.maxZ, x, z  ) == true )
+                continue;
+
+            // console.log(  "minX: " + SpaceWorld.AABB.minX + ", minZ: " + SpaceWorld.AABB.minZ + ", maxX: " + SpaceWorld.AABB.maxX + ", maxZ: " SpaceWorld.AABB.maxZ, x, z  );
+
+            var mat = new THREE.SpriteMaterial({
+                map: texTrees[Math.floor(Math.random() * texTrees.length)],
+                // transparent: true,
+                fog: true,
+                color: 0xffffff
+            });
+
+
+            var tree = new THREE.Sprite(mat);
+            trees.push(tree);
+
+            tree.position.set(x, y, z);
+            tree.scale.set(w, w, 1);
+
+            // これを入れないと透過部分がおかしくなる
+            // tree.renderOrder = 1;
+
+            group.add(tree);
+
+        }
+        SpaceWorld.scene.add(group);
+    }
+
+    function showOrHideFloor( fName, showOrHide ){
+        for( var idx in SpaceWorld.obj3Ds ){
+            var obj3d = SpaceWorld.obj3Ds[idx];
+            if( fName == obj3d.name ){
+                obj3d.visible = showOrHide;
+            }
+        }
+    }
+
+
+    function isInbound( nSX, nSY , nEX, nEY, x, y ){
+        if( nSX <= x && nEX >= x && nSY <= y && nEY >= y )
+            return true;
+
+        return false;
+
+    }
+
+
+</script>
+
+</body>
+</html>
